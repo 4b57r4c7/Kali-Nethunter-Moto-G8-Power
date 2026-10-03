@@ -1,0 +1,146 @@
+name: Build sofiar kernel (test boot image)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_release:
+        description: 'Точният uname -r на стоковото ядро'
+        required: true
+        default: '4.14.180-perf+'
+      extra_fragment:
+        description: 'Допълнителен config фрагмент от configs/ (празно = само базов билд)'
+        required: false
+        default: ''
+
+env:
+  KERNEL_REPO: https://github.com/MotorolaMobilityLLC/kernel-msm
+  KERNEL_TAG: MMI-RPES31.Q4U-47-35-12
+  ARCH: arm64
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check stock boot image
+        run: |
+          set -euo pipefail
+          test -f stock/boot_a.img || { echo "::error::Липсва stock/boot_a.img"; exit 1; }
+          ls -l stock/
+          sha256sum stock/*
+
+      - name: Install host packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev cpio lz4 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 python-is-python3 git curl
+
+      - name: Fetch AOSP clang
+        run: |
+          set -uo pipefail
+          base=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive
+          mkdir -p "$HOME/clang"
+          # Motorola build.config.common uses clang-r377782c; try it first, then close fallbacks.
+          for cand in \
+            "refs/heads/android11-release/clang-r377782c" \
+            "refs/heads/android11-qpr1-release/clang-r377782c" \
+            "refs/tags/android-11.0.0_r1/clang-r377782c" \
+            "refs/heads/android11-release/clang-r383902b" \
+            "refs/heads/android11-release/clang-r383902" \
+            "refs/heads/android12-release/clang-r416183b"; do
+            echo "Trying $cand"
+            if curl -fsSL "$base/$cand.tar.gz" -o /tmp/clang.tgz && [ -s /tmp/clang.tgz ]; then
+              tar -xzf /tmp/clang.tgz -C "$HOME/clang" && echo "CLANG_USED=$cand" >> "$GITHUB_ENV" && break
+            fi
+          done
+          test -x "$HOME/clang/bin/clang" || { echo "::error::Не успях да изтегля clang"; exit 1; }
+          echo "$HOME/clang/bin" >> "$GITHUB_PATH"
+          "$HOME/clang/bin/clang" --version
+
+      - name: Clone kernel source (${{ env.KERNEL_TAG }})
+        run: git clone --depth 1 --branch "$KERNEL_TAG" "$KERNEL_REPO" kernel
+
+      - name: Prepare config
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # Точната конфигурация, извадена (extract-ikconfig) от стоковото ядро в boot_a.
+          # Публичният defconfig НЕ съвпада със стоковото ядро - не го ползвай.
+          test -f ../stock/kernel.config || { echo "::error::Липсва stock/kernel.config"; exit 1; }
+          cp ../stock/kernel.config out/.config
+          frags=../configs/sofiar-base.config
+          if [ -n "${{ inputs.extra_fragment }}" ]; then
+            test -f "../configs/${{ inputs.extra_fragment }}" || { echo "::error::Няма configs/${{ inputs.extra_fragment }}"; exit 1; }
+            frags="$frags ../configs/${{ inputs.extra_fragment }}"
+          fi
+          ARCH=arm64 scripts/kconfig/merge_config.sh -m -O out out/.config $frags
+          cp out/.config out/.config.before_olddefconfig
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+               CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- olddefconfig
+          echo "--- Важни опции ---"
+          grep -E "^(# )?CONFIG_(MODULE_SIG|MODULE_SIG_FORCE|MODVERSIONS|LOCALVERSION)[ =]" out/.config || true
+
+      - name: Set kernel release suffix
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          want="${{ inputs.kernel_release }}"
+          case "$want" in
+            *+) echo "Очаква се '+' в края"; echo "+" > .scmversion; echo "LV_MODE=plus" >> "$GITHUB_ENV" ;;
+            *)  echo "Без '+' в края"; rm -f .scmversion; echo "LV_MODE=empty" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Verify kernelrelease matches stock
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          if [ "$LV_MODE" = empty ]; then export LOCALVERSION=; fi
+          got=$(make -s O=out ARCH=arm64 kernelrelease)
+          echo "Ще се получи: $got | Очаква се: ${{ inputs.kernel_release }}"
+          [ "$got" = "${{ inputs.kernel_release }}" ] || { echo "::error::kernelrelease не съвпада - vendor модулите (тъч) няма да се заредят"; exit 1; }
+
+      - name: Build Image.gz
+        working-directory: kernel
+        run: |
+          set -eo pipefail
+          if [ "$LV_MODE" = empty ]; then export LOCALVERSION=; fi
+          make -j"$(nproc)" O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+               CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+               Image.gz 2>&1 | tee ../build.log
+          ls -l out/arch/arm64/boot/
+          strings out/arch/arm64/boot/Image | grep -m1 "Linux version"
+
+      - name: Repack boot image (stock ramdisk + stock dtb + new kernel)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg mkbootimg
+          mkdir -p unpacked out
+          python3 mkbootimg/unpack_bootimg.py --boot_img stock/boot_a.img --out unpacked --format=mkbootimg -0 > args.bin
+          xargs -0 -a args.bin printf '%s\n'
+          head -c2 unpacked/kernel | od -An -tx1
+          if [ "$(head -c2 unpacked/kernel | od -An -tx1 | tr -d ' ')" = "1f8b" ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz unpacked/kernel
+          else
+            cp kernel/out/arch/arm64/boot/Image unpacked/kernel
+          fi
+          tag=$(date +%Y%m%d-%H%M)-${{ github.run_number }}
+          name="boot-sofiar-test-${tag}.img"
+          xargs -0 -a args.bin python3 mkbootimg/mkbootimg.py --output "out/$name"
+          python3 mkbootimg/unpack_bootimg.py --boot_img "out/$name" --out check | head -30
+          cp kernel/out/.config out/kernel.config
+          cp build.log out/
+          echo "clang: $CLANG_USED" > out/build-info.txt
+          echo "kernel tag: $KERNEL_TAG" >> out/build-info.txt
+          echo "fragment: ${{ inputs.extra_fragment }}" >> out/build-info.txt
+          (cd out && sha256sum *.img > SHA256SUMS.txt)
+          ls -l out
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sofiar-kernel-${{ github.run_number }}
+          path: out/
+          retention-days: 14
