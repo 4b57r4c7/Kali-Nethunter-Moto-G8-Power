@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check stock boot image
         run: |
@@ -112,6 +112,32 @@ jobs:
                Image.gz 2>&1 | tee ../build.log
           ls -l out/arch/arm64/boot/
           strings out/arch/arm64/boot/Image | grep -m1 "Linux version"
+
+      # Грешките отиват в Summary на run-а – видим без вход в GitHub.
+      - name: Build errors to job summary
+        if: failure()
+        run: |
+          {
+            echo "## Build failed"
+            echo "clang: \`${CLANG_USED:-?}\`"
+            echo '### Errors'
+            echo '```'
+            grep -nE "error:|Error [0-9]+|undefined reference|No such file|fatal" build.log 2>/dev/null | head -60 || echo "(няма build.log)"
+            echo '```'
+            echo '### Last 80 lines'
+            echo '```'
+            tail -n 80 build.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Repack boot image (stock ramdisk + stock dtb + new kernel)
         run: |
