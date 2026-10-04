@@ -1,0 +1,14 @@
+# Фърмуер, вграден в ядрото (CONFIG_EXTRA_FIRMWARE), за да работят адаптерите
+# още при `fastboot boot`, без root и без файлове в /vendor/firmware.
+# Формат: <път в linux-firmware> <име, което драйверът иска>
+ath9k_htc/htc_9271-1.4.0.fw ath9k_htc/htc_9271-1.4.0.fw
+ath9k_htc/htc_7010-1.4.0.fw ath9k_htc/htc_7010-1.4.0.fw
+carl9170-1.fw carl9170-1.fw
+rt2870.bin rt2870.bin
+rt73.bin rt73.bin
+mediatek/mt7601u.bin mt7601u.bin
+rtlwifi/rtl8192cufw_A.bin rtlwifi/rtl8192cufw_A.bin
+rtlwifi/rtl8192cufw_B.bin rtlwifi/rtl8192cufw_B.bin
+rtlwifi/rtl8192cufw_TMSC.bin rtlwifi/rtl8192cufw_TMSC.bin
+rtlwifi/rtl8192eu_nic.bin rtlwifi/rtl8192eu_nic.bin
+rtlwifi/rtl8723bu_nic.bin rtlwifi/rtl8723bu_nic.bin

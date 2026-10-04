@@ -96,6 +96,28 @@ jobs:
           if [ -n "${{ inputs.extra_fragment }}" ]; then
             test -f "../configs/${{ inputs.extra_fragment }}" || { echo "::error::Няма configs/${{ inputs.extra_fragment }}"; exit 1; }
             frags="$frags ../configs/${{ inputs.extra_fragment }}"
+            # Фърмуер за вграждане (configs/<име>.firmware), ако фрагментът има такъв списък.
+            fwlist="../configs/$(basename "${{ inputs.extra_fragment }}" .config).firmware"
+            if [ -f "$fwlist" ]; then
+              fwdir="$GITHUB_WORKSPACE/fw"
+              names=""
+              while read -r src dst; do
+                case "$src" in ''|'#'*) continue ;; esac
+                mkdir -p "$(dirname "$fwdir/$dst")"
+                ok=
+                for url in \
+                  "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/$src" \
+                  "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main/$src"; do
+                  if curl -fsSL --retry 3 "$url" -o "$fwdir/$dst" && [ -s "$fwdir/$dst" ]; then ok=1; break; fi
+                done
+                [ -n "$ok" ] || { echo "::error::Не успях да изтегля фърмуер $src"; exit 1; }
+                names="$names $dst"
+              done < "$fwlist"
+              ls -lR "$fwdir"
+              printf 'CONFIG_EXTRA_FIRMWARE="%s"\nCONFIG_EXTRA_FIRMWARE_DIR="%s"\n' "${names# }" "$fwdir" > out/firmware.config
+              cat out/firmware.config
+              frags="$frags out/firmware.config"
+            fi
           fi
           ARCH=arm64 scripts/kconfig/merge_config.sh -m -O out out/.config $frags
           cp out/.config out/.config.before_olddefconfig
@@ -103,6 +125,18 @@ jobs:
                CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-gnueabi- olddefconfig
           echo "--- Важни опции ---"
           grep -E "^(# )?CONFIG_(MODULE_SIG|MODULE_SIG_FORCE|MODVERSIONS|LOCALVERSION)[ =]" out/.config || true
+          # Всяка опция от фрагментите трябва да е оцеляла след olddefconfig.
+          bad=0
+          for f in $frags; do
+            while IFS= read -r line; do
+              grep -qxF "$line" out/.config || { echo "::error::$(basename "$f"): '$line' не е приложено"; bad=1; }
+            done < <(grep -E "^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set)" "$f")
+          done
+          # Тези менят структури, ползвани от vendor модулите (Wi-Fi, BT) - трябва да останат изключени.
+          for o in CFG80211_WEXT BT_LEDS; do
+            if grep -q "^CONFIG_$o=y" out/.config; then echo "::error::CONFIG_$o е включено - чупи vendor модулите"; bad=1; fi
+          done
+          [ "$bad" = 0 ]
 
       - name: Set kernel release suffix
         working-directory: kernel

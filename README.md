@@ -20,6 +20,8 @@ fastboot boot boot-sofiar-test-*.img
 - `stock/boot_a.img` – стоковият boot от телефона (без лични данни).
 - `stock/kernel.config` – точната конфигурация, извадена от стоковото ядро (`extract-ikconfig`).
 - `configs/sofiar-base.config` – задължителни промени (изключен `MODULE_SIG_FORCE`).
-- `configs/*.config` – допълнителни фрагменти (напр. NetHunter), избират се при стартиране.
+- `configs/*.config` – допълнителни фрагменти, избират се при стартиране (`extra_fragment`).
+- `configs/nethunter.config` – NetHunter: HID gadget, mac80211 + USB Wi-Fi адаптери (monitor/injection), Bluetooth (RFCOMM, BNEP, HIDP, USB донгъли).
+- `configs/nethunter.firmware` – фърмуер за адаптерите, вграден в ядрото от linux-firmware при билда.
 
 ⚠️ Репото е публично – никога не качвай тук EFS/IMEI бекъпи (modemst*, fsg, persist и т.н.).
