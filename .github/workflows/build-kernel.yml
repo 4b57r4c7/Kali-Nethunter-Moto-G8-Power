@@ -62,18 +62,30 @@ jobs:
       - name: Clone kernel source (${{ env.KERNEL_TAG }})
         run: git clone --depth 1 --branch "$KERNEL_TAG" "$KERNEL_REPO" kernel
 
-      - name: Patch - drop unversionable GSI export
+      - name: Patch - drop unversionable GSI exports
         working-directory: kernel
         run: |
           set -euo pipefail
           f=drivers/platform/msm/gsi/gsi.c
-          # genksyms не може да версионира gsi_write_channel_scratch (union __packed по
-          # стойност) -> счупен абсолютен __crc -> линк грешка. GSI/IPA са вградени (=y),
-          # никой зареждаем модул не ползва този символ, затова махаме само неговия експорт.
-          grep -q "^EXPORT_SYMBOL(gsi_write_channel_scratch);" "$f" || { echo "::error::Редът за експорт не е намерен - сорсът се е променил"; exit 1; }
-          sed -i '/^EXPORT_SYMBOL(gsi_write_channel_scratch);$/d' "$f"
-          echo "Премахнат експорт. Проверка (не трябва да има ред):"
-          grep -n "EXPORT_SYMBOL(gsi_write_channel_scratch)" "$f" || echo "OK - няма."
+          # genksyms не може да версионира функции, които приемат union __packed по
+          # стойност -> счупен абсолютен __crc -> ld 2.38 отказва линка. GSI/IPA са
+          # вградени (=y), никой зареждаем модул не ползва тези символи, затова махаме
+          # само експортите им.
+          for sym in gsi_write_channel_scratch gsi_write_wdi3_channel_scratch2_reg; do
+            grep -q "^EXPORT_SYMBOL($sym);" "$f" || { echo "::error::Експортът на $sym не е намерен - сорсът се е променил"; exit 1; }
+            sed -i "/^EXPORT_SYMBOL($sym);\$/d" "$f"
+            if grep -n "^EXPORT_SYMBOL($sym);" "$f"; then echo "::error::$sym все още е експортиран"; exit 1; fi
+            echo "Премахнат експорт: $sym"
+          done
+
+      - name: Patch - kernel source fixes for ld 2.38 (patches/)
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          for p in ../patches/*.patch; do
+            echo "Прилагам $p"
+            git apply --verbose "$p"
+          done
 
       - name: Prepare config
         working-directory: kernel

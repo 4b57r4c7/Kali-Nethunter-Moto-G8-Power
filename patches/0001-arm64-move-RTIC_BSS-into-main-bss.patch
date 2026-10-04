@@ -1,0 +1,40 @@
+diff --git a/arch/arm64/kernel/vmlinux.lds.S b/arch/arm64/kernel/vmlinux.lds.S
+index 796d8c5..c59d116 100644
+--- a/arch/arm64/kernel/vmlinux.lds.S
++++ b/arch/arm64/kernel/vmlinux.lds.S
+@@ -229,7 +229,23 @@ SECTIONS
+ 	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);
+ 	_edata = .;
+ 
+-	BSS_SECTION(0, 0, 0)
++	/*
++	 * BSS_SECTION(0, 0, 0) expanded so the RTIC area sits inside the main
++	 * .bss, between __bss_start and __bss_stop: it gets zeroed at boot and
++	 * newer linkers (ld >= 2.30, ld.lld) no longer see an orphan .bss
++	 * output section after the debug sections.  It goes first so that
++	 * BSS_MAIN (.bss.*) cannot swallow .bss.rtic before RTIC_BSS does.
++	 */
++	__bss_start = .;
++	SBSS(0)
++	.bss : AT(ADDR(.bss) - LOAD_OFFSET) {
++		RTIC_BSS
++		*(.bss..page_aligned)
++		*(.dynbss)
++		*(BSS_MAIN)
++		*(COMMON)
++	}
++	__bss_stop = .;
+ 
+ 	. = ALIGN(PAGE_SIZE);
+ 	idmap_pg_dir = .;
+@@ -253,10 +269,6 @@ SECTIONS
+ 	STABS_DEBUG
+ 
+ 	HEAD_SYMBOLS
+-
+-	.bss : {			/* bss segment		*/
+-         RTIC_BSS
+-	}
+ }
+ 
+ /*
