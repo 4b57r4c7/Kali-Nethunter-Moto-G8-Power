@@ -83,6 +83,7 @@ jobs:
       - name: Clone kernel source (${{ env.KERNEL_TAG }})
         run: git clone --depth 1 --branch "$KERNEL_TAG" "$KERNEL_REPO" kernel
 
+main
       - name: Prepare config
         working-directory: kernel
         run: |
