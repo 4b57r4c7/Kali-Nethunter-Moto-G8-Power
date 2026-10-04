@@ -59,21 +59,29 @@ jobs:
           echo "$HOME/clang/bin" >> "$GITHUB_PATH"
           "$HOME/clang/bin/clang" --version
 
+      - name: Fetch AOSP GCC 4.9 binutils (linker)
+        run: |
+          set -uo pipefail
+          # Motorola линква с binutils 2.27 от aarch64-linux-android-4.9. По-новото GNU ld
+          # (2.38 в Ubuntu) отказва абсолютните __crc_* релокации при KASLR.
+          base=https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive
+          mkdir -p "$HOME/gcc49"
+          for cand in \
+            "refs/heads/android11-release" \
+            "refs/tags/android-11.0.0_r1" \
+            "refs/heads/android10-release" \
+            "refs/heads/pie-release"; do
+            echo "Trying $cand"
+            if curl -fsSL "$base/$cand.tar.gz" -o /tmp/gcc49.tgz && [ -s /tmp/gcc49.tgz ]; then
+              tar -xzf /tmp/gcc49.tgz -C "$HOME/gcc49" && echo "GCC49_USED=$cand" >> "$GITHUB_ENV" && break
+            fi
+          done
+          test -x "$HOME/gcc49/bin/aarch64-linux-android-ld" || { echo "::error::Не успях да изтегля aarch64-linux-android-4.9"; exit 1; }
+          echo "$HOME/gcc49/bin" >> "$GITHUB_PATH"
+          "$HOME/gcc49/bin/aarch64-linux-android-ld" --version | head -1
+
       - name: Clone kernel source (${{ env.KERNEL_TAG }})
         run: git clone --depth 1 --branch "$KERNEL_TAG" "$KERNEL_REPO" kernel
-
-      - name: Patch - drop unversionable GSI export
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          f=drivers/platform/msm/gsi/gsi.c
-          # genksyms не може да версионира gsi_write_channel_scratch (union __packed по
-          # стойност) -> счупен абсолютен __crc -> линк грешка. GSI/IPA са вградени (=y),
-          # никой зареждаем модул не ползва този символ, затова махаме само неговия експорт.
-          grep -q "^EXPORT_SYMBOL(gsi_write_channel_scratch);" "$f" || { echo "::error::Редът за експорт не е намерен - сорсът се е променил"; exit 1; }
-          sed -i '/^EXPORT_SYMBOL(gsi_write_channel_scratch);$/d' "$f"
-          echo "Премахнат експорт. Проверка (не трябва да има ред):"
-          grep -n "EXPORT_SYMBOL(gsi_write_channel_scratch)" "$f" || echo "OK - няма."
 
       - name: Prepare config
         working-directory: kernel
@@ -92,7 +100,7 @@ jobs:
           ARCH=arm64 scripts/kconfig/merge_config.sh -m -O out out/.config $frags
           cp out/.config out/.config.before_olddefconfig
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-               CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- olddefconfig
+               CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-gnueabi- olddefconfig
           echo "--- Важни опции ---"
           grep -E "^(# )?CONFIG_(MODULE_SIG|MODULE_SIG_FORCE|MODVERSIONS|LOCALVERSION)[ =]" out/.config || true
 
@@ -121,7 +129,7 @@ jobs:
           set -eo pipefail
           if [ "$LV_MODE" = empty ]; then export LOCALVERSION=; fi
           make -j"$(nproc)" O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-               CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+               CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                Image.gz 2>&1 | tee ../build.log
           ls -l out/arch/arm64/boot/
           strings out/arch/arm64/boot/Image | grep -m1 "Linux version"
@@ -133,6 +141,7 @@ jobs:
           {
             echo "## Build failed"
             echo "clang: \`${CLANG_USED:-?}\`"
+            echo "binutils: \`${GCC49_USED:-?}\`"
             echo '### Errors'
             echo '```'
             grep -nE "error:|Error [0-9]+|undefined reference|No such file|fatal" build.log 2>/dev/null | head -60 || echo "(няма build.log)"
@@ -172,6 +181,7 @@ jobs:
           cp kernel/out/.config out/kernel.config
           cp build.log out/
           echo "clang: $CLANG_USED" > out/build-info.txt
+          echo "binutils: aarch64-linux-android-4.9 $GCC49_USED" >> out/build-info.txt
           echo "kernel tag: $KERNEL_TAG" >> out/build-info.txt
           echo "fragment: ${{ inputs.extra_fragment }}" >> out/build-info.txt
           (cd out && sha256sum *.img > SHA256SUMS.txt)
