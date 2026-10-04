@@ -62,6 +62,19 @@ jobs:
       - name: Clone kernel source (${{ env.KERNEL_TAG }})
         run: git clone --depth 1 --branch "$KERNEL_TAG" "$KERNEL_REPO" kernel
 
+      - name: Patch - drop unversionable GSI export
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          f=drivers/platform/msm/gsi/gsi.c
+          # genksyms не може да версионира gsi_write_channel_scratch (union __packed по
+          # стойност) -> счупен абсолютен __crc -> линк грешка. GSI/IPA са вградени (=y),
+          # никой зареждаем модул не ползва този символ, затова махаме само неговия експорт.
+          grep -q "^EXPORT_SYMBOL(gsi_write_channel_scratch);" "$f" || { echo "::error::Редът за експорт не е намерен - сорсът се е променил"; exit 1; }
+          sed -i '/^EXPORT_SYMBOL(gsi_write_channel_scratch);$/d' "$f"
+          echo "Премахнат експорт. Проверка (не трябва да има ред):"
+          grep -n "EXPORT_SYMBOL(gsi_write_channel_scratch)" "$f" || echo "OK - няма."
+
       - name: Prepare config
         working-directory: kernel
         run: |
@@ -78,7 +91,7 @@ jobs:
           fi
           ARCH=arm64 scripts/kconfig/merge_config.sh -m -O out out/.config $frags
           cp out/.config out/.config.before_olddefconfig
-          make O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- \
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- olddefconfig
           echo "--- Важни опции ---"
           grep -E "^(# )?CONFIG_(MODULE_SIG|MODULE_SIG_FORCE|MODVERSIONS|LOCALVERSION)[ =]" out/.config || true
@@ -107,7 +120,7 @@ jobs:
         run: |
           set -eo pipefail
           if [ "$LV_MODE" = empty ]; then export LOCALVERSION=; fi
-          make -j"$(nproc)" O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- \
+          make -j"$(nproc)" O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                Image.gz 2>&1 | tee ../build.log
           ls -l out/arch/arm64/boot/
